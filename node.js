@@ -7,10 +7,12 @@ import { identify } from '@libp2p/identify'
 import { bootstrap } from '@libp2p/bootstrap'
 import { pipe } from 'it-pipe'
 import { toString } from 'uint8arrays/to-string'
-import { fromString } from 'uint8arrays/from-string' 
+import { fromString } from 'uint8arrays/from-string'
 import { Uint8ArrayList } from 'uint8arraylist'
 import readline from 'readline'
 import { circuitRelayServer } from '@libp2p/circuit-relay-v2'
+import ping from 'ping' // Install via `npm install ping`
+import os from 'os'
 
 // Bootstrap peers
 const bootstrapPeers = [
@@ -18,9 +20,7 @@ const bootstrapPeers = [
 ]
 
 const MINER_ID = `miner-${Math.floor(Math.random() * 10000)}`
-const LOCATION_API = "https://ipinfo.io" // Example API to simulate geolocation (replace with actual GPS device or real API)
-
-const textEncoder = new TextEncoder()
+const LOCATION_API = "https://ipinfo.io" // Simulated geolocation API (replace with real GPS)
 
 // Create the libp2p node
 const node = await createLibp2p({
@@ -40,83 +40,101 @@ await node.start()
 console.log('✅ Node started with ID:', node.peerId.toString())
 console.log('📡 Listening on:', node.getMultiaddrs().map(ma => ma.toString()).join('\n'))
 
-// Function to fetch real-time location (simulated in this case)
+// Function to fetch real-time location (simulated)
 async function fetchRealTimeLocation() {
-  // Simulate fetching location from an API or GPS (replace this with your actual method)
-  const response = await fetch(`${LOCATION_API}/json`);
-  const data = await response.json();
-  const location = {
-    city: data.city,
-    region: data.region,
-    country: data.country,
-    loc: data.loc.split(','),
-    latitude: parseFloat(data.loc.split(',')[0]),
-    longitude: parseFloat(data.loc.split(',')[1]),
-  };
-
-  return location;
+  try {
+    const response = await fetch(`${LOCATION_API}/json`)
+    const data = await response.json()
+    return {
+      city: data.city,
+      region: data.region,
+      country: data.country,
+      latitude: parseFloat(data.loc.split(',')[0]),
+      longitude: parseFloat(data.loc.split(',')[1]),
+    }
+  } catch (error) {
+    console.error('❌ Failed to fetch location:', error)
+    return null
+  }
 }
 
-// Function to store/update miner's location in DHT
-async function updateMinerLocation() {
-  const location = await fetchRealTimeLocation();
+// Function to measure bandwidth (simulated)
+function getBandwidth() {
+  // Simulate bandwidth measurement (replace with real speed test logic)
+  return Math.floor(Math.random() * 100) + 10 // Random bandwidth in Mbps
+}
+
+// Function to measure network latency (ping to a well-known server)
+async function getLatency() {
+  try {
+    const res = await ping.promise.probe('8.8.8.8') // Google DNS
+    return res.time // Latency in ms
+  } catch (error) {
+    console.error('❌ Failed to measure latency:', error)
+    return null
+  }
+}
+
+// Function to store/update miner's information in DHT
+async function updateMinerStatus() {
+  const location = await fetchRealTimeLocation()
+  const bandwidth = getBandwidth()
+  const latency = await getLatency()
 
   const minerInfo = JSON.stringify({
     id: MINER_ID,
-    location: location,
-    bandwidth: 54, // You can keep bandwidth static or dynamically update it
-  });
+    location,
+    bandwidth: bandwidth + ' Mbps',
+    latency: latency ? latency + ' ms' : 'N/A',
+  })
 
-  const minerKey = textEncoder.encode(MINER_ID);
-  const minerValue = textEncoder.encode(minerInfo);
+  const minerKey = new TextEncoder().encode(MINER_ID)
+  const minerValue = new TextEncoder().encode(minerInfo)
 
-  // Update the DHT with the latest miner location
-  await node.services.dht.put(minerKey, minerValue);
-  console.log(`[+] Miner ${MINER_ID} location updated in DHT:`, location);
+  // Store updated miner info in DHT
+  await node.services.dht.put(minerKey, minerValue)
+  console.log(`[+] Miner ${MINER_ID} status updated in DHT:`, { location, bandwidth, latency })
 }
 
-// Update miner's location every 30 seconds
-setInterval(updateMinerLocation, 30000); // Update every 30 seconds
+// Update miner's status every 30 seconds
+setInterval(updateMinerStatus, 30000)
 
 // Handle incoming messages (Chat)
 node.handle('/chat/1.0.0', async ({ stream, connection }) => {
   try {
-    const senderPeerId = connection.remotePeer.toString();
+    const senderPeerId = connection.remotePeer.toString()
 
     await pipe(
       stream.source,
       async function (source) {
         for await (let chunk of source) {
           if (chunk instanceof Uint8ArrayList) {
-            chunk = chunk.subarray();
+            chunk = chunk.subarray()
           }
           
-          const message = toString(chunk);
-          console.log('📨 Incoming message detected');
-          console.log(`💬 Received message from [${senderPeerId}]:`, message);
+          const message = toString(chunk)
+          console.log('📨 Incoming message detected')
+          console.log(`💬 Received message from [${senderPeerId}]:`, message)
         }
       }
-    );
+    )
   } catch (error) {
-    console.error('❌ Error reading message:', error);
+    console.error('❌ Error reading message:', error)
   }
-});
-
-
-
+})
 
 // Interactive chat input
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
 
 async function sendMessage(targetPeerId) {
   try {
-    const stream = await node.dialProtocol(targetPeerId, '/chat/1.0.0');
+    const stream = await node.dialProtocol(targetPeerId, '/chat/1.0.0')
     rl.question('Enter message: ', async (message) => {
-      await pipe([fromString(message)], stream.sink);
-      console.log('📨 Message sent!');
-      sendMessage(targetPeerId); // Recursively ask for more messages
-    });
+      await pipe([fromString(message)], stream.sink)
+      console.log('📨 Message sent!')
+      sendMessage(targetPeerId) // Recursively ask for more messages
+    })
   } catch (err) {
-    console.error('❌ Failed to send message:', err);
+    console.error('❌ Failed to send message:', err)
   }
 }
