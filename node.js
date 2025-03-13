@@ -12,7 +12,7 @@ import { Uint8ArrayList } from 'uint8arraylist'
 import readline from 'readline'
 import { circuitRelayServer } from '@libp2p/circuit-relay-v2'
 import ping from 'ping' // Install via `npm install ping`
-import os from 'os'
+import { exec } from 'child_process'
 
 // Bootstrap peers
 const bootstrapPeers = [
@@ -20,7 +20,7 @@ const bootstrapPeers = [
 ]
 
 const MINER_ID = `miner-${Math.floor(Math.random() * 10000)}`
-const LOCATION_API = "https://ipinfo.io" // Simulated geolocation API (replace with real GPS)
+const LOCATION_API = "https://ipinfo.io" // Simulated geolocation API
 
 // Create the libp2p node
 const node = await createLibp2p({
@@ -40,7 +40,7 @@ await node.start()
 console.log('✅ Node started with ID:', node.peerId.toString())
 console.log('📡 Listening on:', node.getMultiaddrs().map(ma => ma.toString()).join('\n'))
 
-// Function to fetch real-time location (simulated)
+// Function to fetch real-time location
 async function fetchRealTimeLocation() {
   try {
     const response = await fetch(`${LOCATION_API}/json`)
@@ -58,13 +58,7 @@ async function fetchRealTimeLocation() {
   }
 }
 
-// Function to measure bandwidth (simulated)
-function getBandwidth() {
-  // Simulate bandwidth measurement (replace with real speed test logic)
-  return Math.floor(Math.random() * 100) + 10 // Random bandwidth in Mbps
-}
-
-// Function to measure network latency (ping to a well-known server)
+// Function to measure network latency
 async function getLatency() {
   try {
     const res = await ping.promise.probe('8.8.8.8') // Google DNS
@@ -75,23 +69,63 @@ async function getLatency() {
   }
 }
 
+// Function to measure bandwidth using netstat (Windows) or /proc/net/dev (Linux/macOS)
+async function getBandwidth(interval = 1000) {
+  return new Promise((resolve) => {
+    const cmd = process.platform === 'win32' ? 'netstat -e' : "cat /proc/net/dev | grep eth0"
+
+    exec(cmd, (error, stdout) => {
+      if (error) {
+        console.error('❌ Error reading network stats:', error)
+        return resolve(null)
+      }
+
+      const values = stdout.match(/\d+/g)
+      if (!values || values.length < (process.platform === 'win32' ? 2 : 9)) return resolve(null)
+
+      const oldReceived = parseInt(values[0])
+      const oldSent = parseInt(values[process.platform === 'win32' ? 1 : 8])
+
+      setTimeout(() => {
+        exec(cmd, (error, stdout) => {
+          if (error) return resolve(null)
+
+          const newValues = stdout.match(/\d+/g)
+          if (!newValues || newValues.length < (process.platform === 'win32' ? 2 : 9)) return resolve(null)
+
+          const newReceived = parseInt(newValues[0])
+          const newSent = parseInt(newValues[process.platform === 'win32' ? 1 : 8])
+
+          // Calculate bandwidth (Mbps)
+          const receivedMbps = ((newReceived - oldReceived) * 8) / (interval * 1000)
+          const sentMbps = ((newSent - oldSent) * 8) / (interval * 1000)
+
+          resolve({
+            receivedMbps: receivedMbps.toFixed(2),
+            sentMbps: sentMbps.toFixed(2),
+          })
+        })
+      }, interval)
+    })
+  })
+}
+
 // Function to store/update miner's information in DHT
 async function updateMinerStatus() {
   const location = await fetchRealTimeLocation()
-  const bandwidth = getBandwidth()
+  const bandwidth = await getBandwidth()
   const latency = await getLatency()
 
   const minerInfo = JSON.stringify({
     id: MINER_ID,
     location,
-    bandwidth: bandwidth + ' Mbps',
-    latency: latency ? latency + ' ms' : 'N/A',
+    bandwidth: bandwidth ? `${bandwidth.receivedMbps} Mbps (down), ${bandwidth.sentMbps} Mbps (up)` : 'N/A',
+    latency: latency ? `${latency} ms` : 'N/A',
   })
 
   const minerKey = new TextEncoder().encode(MINER_ID)
   const minerValue = new TextEncoder().encode(minerInfo)
 
-  // Store updated miner info in DHT
   await node.services.dht.put(minerKey, minerValue)
   console.log(`[+] Miner ${MINER_ID} status updated in DHT:`, { location, bandwidth, latency })
 }
